@@ -74,12 +74,12 @@ jobs:
                 --compartment-id "$COMPARTMENT_ID" \
                 --availability-domain "$AD" \
                 --shape "VM.Standard.A1.Flex" \
-                --shape-config '{"ocpus":1,"memoryInGBs":6}' \
+                --shape-config '{"ocpus":2,"memoryInGBs":12}' \
                 --image-id "$IMAGE_ID" \
                 --subnet-id "$SUBNET_ID" \
                 --assign-public-ip true \
                 --display-name "mongodb-a1" \
-                --boot-volume-size-in-gbs 50 \
+                --boot-volume-size-in-gbs 100 \
                 --ssh-authorized-keys-file /tmp/ssh.pub >/tmp/out 2>&1; then
               echo "✅✅ 搶到容量了（第 $i 次嘗試）！請到 OCI Console → Compute → Instances 看 mongodb-a1 的 Public IP。"
               exit 0
