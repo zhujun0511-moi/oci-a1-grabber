@@ -1,0 +1,94 @@
+name: OCI A1 Grab
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'   # 每 5 小時開一輪；每輪內部迴圈 ~4h50m 每 60s 試一次
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-a1-grab
+  cancel-in-progress: false   # 不取消進行中的輪次（避免中斷正在搶的）
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Install OCI CLI
+        run: pip install --quiet oci-cli
+
+      - name: Configure OCI (secrets → ~/.oci)
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          umask 077
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY
+          region=$OCI_REGION
+          key_file=$HOME/.oci/key.pem
+          EOF
+
+      - name: Grab A1 capacity (loop)
+        env:
+          SUPPRESS_LABEL_WARNING: "True"
+          COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
+          SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+          AD: ${{ secrets.OCI_AD }}
+          SSH_PUB: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+        run: |
+          set -u
+          # ── 冪等鎖：已有非終止的 mongodb-a1 就跳過（避免重複開→計費）──
+          CNT=$(oci compute instance list -c "$COMPARTMENT_ID" --display-name mongodb-a1 --all \
+                --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" \
+                --raw-output 2>/dev/null || echo 0)
+          if [ "${CNT:-0}" != "0" ]; then
+            echo "✅ 已存在 mongodb-a1（$CNT 台），本輪跳過，不重複開。"
+            exit 0
+          fi
+          IMAGE_ID=$(oci compute image list -c "$COMPARTMENT_ID" \
+                --operating-system "Canonical Ubuntu" --operating-system-version "22.04" \
+                --shape "VM.Standard.A1.Flex" --sort-by TIMECREATED --sort-order DESC \
+                --query 'data[0].id' --raw-output)
+          case "$IMAGE_ID" in ocid1.image*) : ;; *) echo "❌ 取映像失敗"; exit 1;; esac
+          printf '%s\n' "$SSH_PUB" > /tmp/ssh.pub
+          END=$(( $(date +%s) + 17400 ))   # ~4h50m 視窗
+          i=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            i=$((i+1))
+            if oci compute instance launch \
+                --compartment-id "$COMPARTMENT_ID" \
+                --availability-domain "$AD" \
+                --shape "VM.Standard.A1.Flex" \
+                --shape-config '{"ocpus":1,"memoryInGBs":6}' \
+                --image-id "$IMAGE_ID" \
+                --subnet-id "$SUBNET_ID" \
+                --assign-public-ip true \
+                --display-name "mongodb-a1" \
+                --boot-volume-size-in-gbs 50 \
+                --ssh-authorized-keys-file /tmp/ssh.pub >/tmp/out 2>&1; then
+              echo "✅✅ 搶到容量了（第 $i 次嘗試）！請到 OCI Console → Compute → Instances 看 mongodb-a1 的 Public IP。"
+              exit 0
+            fi
+            if grep -qiE "Out of (host )?capacity|OutOfHostCapacity|InternalError|500|429|TooManyRequests|LimitExceeded" /tmp/out; then
+              echo "[$i] $(date -u +%H:%M:%S) 無容量，60s 後重試"
+            else
+              echo "❌ 非容量錯誤，停止（不印可能含識別碼的完整內容，僅前2行）："
+              head -2 /tmp/out
+              exit 1
+            fi
+            sleep 60
+          done
+          echo "本輪 5h 視窗結束（仍無容量），下次排程續搶。"
