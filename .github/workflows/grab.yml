@@ -2,6 +2,8 @@ name: OCI A1 Grab
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]     # 推送即觸發（強制 GitHub 註冊 + 立即開跑）
   schedule:
     - cron: '0 */5 * * *'   # 每 5 小時開一輪；每輪內部迴圈 ~4h50m 每 60s 試一次
 
