@@ -3,16 +3,16 @@ name: OCI A1 Grab
 on:
   workflow_dispatch:
   push:
-    branches: [master]     # 推送即觸發（強制 GitHub 註冊 + 立即開跑）
+    branches: [master]
   schedule:
-    - cron: '0 */5 * * *'   # 每 5 小時開一輪；每輪內部迴圈 ~4h50m 每 60s 試一次
+    - cron: '0 */5 * * *'
 
 permissions:
   contents: read
 
 concurrency:
   group: oci-a1-grab
-  cancel-in-progress: false   # 不取消進行中的輪次（避免中斷正在搶的）
+  cancel-in-progress: false
 
 jobs:
   grab:
@@ -43,7 +43,7 @@ jobs:
           key_file=$HOME/.oci/key.pem
           EOF
 
-      - name: Grab A1 capacity (loop)
+      - name: Grab A1 — 搶到免費上限(4 OCPU)才停
         env:
           SUPPRESS_LABEL_WARNING: "True"
           COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
@@ -52,45 +52,58 @@ jobs:
           SSH_PUB: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
         run: |
           set -u
-          # ── 冪等鎖：已有非終止的 mongodb-a1 就跳過（避免重複開→計費）──
-          CNT=$(oci compute instance list -c "$COMPARTMENT_ID" --display-name mongodb-a1 --all \
-                --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" \
-                --raw-output 2>/dev/null || echo 0)
-          if [ "${CNT:-0}" != "0" ]; then
-            echo "✅ 已存在 mongodb-a1（$CNT 台），本輪跳過，不重複開。"
-            exit 0
-          fi
+          FREE_OCPU=4          # ⚠️ 免費上限 4 OCPU；PAYG 超過會計費，故到此必停
+          PER_OCPU=2
+          PER_MEM=12
+          PER_BOOT=90          # 2 台×90=180 < 免費 200GB
+          # 目前所有 A1(非終止) 的 OCPU 總和
+          cur_ocpu() {
+            local v
+            v=$(oci compute instance list -c "$COMPARTMENT_ID" --all \
+                --query "sum(data[?\"shape\"=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].\"shape-config\".ocpus)" \
+                --raw-output 2>/dev/null)
+            v=${v%%.*}
+            case "$v" in ''|*[!0-9]*) v=0 ;; esac
+            echo "$v"
+          }
           IMAGE_ID=$(oci compute image list -c "$COMPARTMENT_ID" \
                 --operating-system "Canonical Ubuntu" --operating-system-version "22.04" \
                 --shape "VM.Standard.A1.Flex" --sort-by TIMECREATED --sort-order DESC \
                 --query 'data[0].id' --raw-output)
-          case "$IMAGE_ID" in ocid1.image*) : ;; *) echo "❌ 取映像失敗"; exit 1;; esac
+          case "$IMAGE_ID" in ocid1.image*) : ;; *) echo "❌ 取映像失敗"; exit 1 ;; esac
           printf '%s\n' "$SSH_PUB" > /tmp/ssh.pub
           END=$(( $(date +%s) + 17400 ))   # ~4h50m 視窗
           i=0
           while [ "$(date +%s)" -lt "$END" ]; do
+            USED=$(cur_ocpu)
+            if [ "$USED" -ge "$FREE_OCPU" ]; then
+              echo "🎉 已達免費上限 ${USED}/${FREE_OCPU} OCPU，全部搶滿，停止（不再開、避免計費）。"
+              exit 0
+            fi
             i=$((i+1))
+            NAME="mongodb-a1-$(date +%s)"
             if oci compute instance launch \
                 --compartment-id "$COMPARTMENT_ID" \
                 --availability-domain "$AD" \
                 --shape "VM.Standard.A1.Flex" \
-                --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+                --shape-config "{\"ocpus\":$PER_OCPU,\"memoryInGBs\":$PER_MEM}" \
                 --image-id "$IMAGE_ID" \
                 --subnet-id "$SUBNET_ID" \
                 --assign-public-ip true \
-                --display-name "mongodb-a1" \
-                --boot-volume-size-in-gbs 100 \
+                --display-name "$NAME" \
+                --boot-volume-size-in-gbs "$PER_BOOT" \
                 --ssh-authorized-keys-file /tmp/ssh.pub >/tmp/out 2>&1; then
-              echo "✅✅ 搶到容量了（第 $i 次嘗試）！請到 OCI Console → Compute → Instances 看 mongodb-a1 的 Public IP。"
-              exit 0
+              echo "✅✅ 搶到一台（$NAME，${PER_OCPU} OCPU/${PER_MEM} GB）！累計約 $((USED+PER_OCPU))/${FREE_OCPU} OCPU，繼續搶剩餘額度..."
+              sleep 45   # 等新實例登記進 OCPU 計數再續
+              continue
             fi
             if grep -qiE "Out of (host )?capacity|OutOfHostCapacity|InternalError|500|429|TooManyRequests|LimitExceeded" /tmp/out; then
-              echo "[$i] $(date -u +%H:%M:%S) 無容量，60s 後重試"
+              echo "[$i] $(date -u +%H:%M:%S) 無容量（目前 ${USED}/${FREE_OCPU}），60s 後重試"
             else
-              echo "❌ 非容量錯誤，停止（不印可能含識別碼的完整內容，僅前2行）："
+              echo "❌ 非容量錯誤，停止（僅前2行）："
               head -2 /tmp/out
               exit 1
             fi
             sleep 60
           done
-          echo "本輪 5h 視窗結束（仍無容量），下次排程續搶。"
+          echo "本輪 5h 視窗結束（目前 $(cur_ocpu)/${FREE_OCPU} OCPU），下次排程續搶剩餘。"
