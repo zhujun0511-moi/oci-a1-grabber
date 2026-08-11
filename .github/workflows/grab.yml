@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: oci-a1-grab
@@ -43,67 +44,53 @@ jobs:
           key_file=$HOME/.oci/key.pem
           EOF
 
-      - name: Grab — 填滿免費 4/24（1/6 + 1/6 + 2/12），每搶到一台發通知
+      - name: Grab — 填滿 4/24（1/6+1/6+2/12），每搶到就開 Issue email 你
         env:
           SUPPRESS_LABEL_WARNING: "True"
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
           SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
           AD: ${{ secrets.OCI_AD }}
           SSH_PUB: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           set -u
           FREE_OCPU=4
-
-          notify() {           # 有設 TG secret 就推 Telegram；沒設就只印 log
-            echo "$1"
-            if [ -n "${TG_BOT_TOKEN:-}" ] && [ -n "${TG_CHAT_ID:-}" ]; then
-              curl -s -m 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-                --data-urlencode "chat_id=${TG_CHAT_ID}" \
-                --data-urlencode "text=$1" >/dev/null 2>&1 || true
-            fi
+          notify() {   # $1=標題 $2=內文；bot 開 Issue @你 → GitHub email 你
+            echo ">> $1 | $2"
+            gh issue create -R "$REPO" --title "$1" --body "@zhujun0511-moi $2" >/dev/null 2>&1 || echo "(issue 開失敗，僅 log)"
           }
-          cur_ocpu() {         # 目前所有 A1(非終止) OCPU 總和
+          cur_ocpu() {
             local v
             v=$(oci compute instance list -c "$COMPARTMENT_ID" --all \
                 --query "sum(data[?\"shape\"=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].\"shape-config\".ocpus)" \
                 --raw-output 2>/dev/null)
             v=${v%%.*}; case "$v" in ''|*[!0-9]*) v=0 ;; esac; echo "$v"
           }
-
           IMAGE_ID=$(oci compute image list -c "$COMPARTMENT_ID" \
                 --operating-system "Canonical Ubuntu" --operating-system-version "22.04" \
                 --shape "VM.Standard.A1.Flex" --sort-by TIMECREATED --sort-order DESC \
                 --query 'data[0].id' --raw-output)
           case "$IMAGE_ID" in ocid1.image*) : ;; *) echo "❌ 取映像失敗"; exit 1 ;; esac
           printf '%s\n' "$SSH_PUB" > /tmp/ssh.pub
-
           END=$(( $(date +%s) + 17400 ))
           i=0
           while [ "$(date +%s)" -lt "$END" ]; do
             USED=$(cur_ocpu)
             if [ "$USED" -ge "$FREE_OCPU" ]; then
-              notify "🎉 OCI 免費額度已搶滿 ${USED}/${FREE_OCPU} OCPU（1/6+1/6+2/12），搶容器停止。"
+              notify "🎉 OCI 免費額度搶滿 ${USED}/${FREE_OCPU} OCPU" "1/6+1/6+2/12 已就位，搶容器停止。"
               exit 0
             fi
-            # 尺寸：前兩個 OCPU 用 1/6，最後兩個 OCPU 用一台 2/12
             if [ "$USED" -lt 2 ]; then OCPU=1; MEM=6; BOOT=50; else OCPU=2; MEM=12; BOOT=90; fi
             REMAIN=$(( FREE_OCPU - USED ))
             if [ "$OCPU" -gt "$REMAIN" ]; then OCPU=$REMAIN; MEM=$(( OCPU*6 )); fi
-
             i=$((i+1))
             NAME="mongodb-a1-$(date +%s)"
             if oci compute instance launch \
-                --compartment-id "$COMPARTMENT_ID" \
-                --availability-domain "$AD" \
-                --shape "VM.Standard.A1.Flex" \
-                --shape-config "{\"ocpus\":$OCPU,\"memoryInGBs\":$MEM}" \
-                --image-id "$IMAGE_ID" \
-                --subnet-id "$SUBNET_ID" \
-                --assign-public-ip true \
-                --display-name "$NAME" \
-                --boot-volume-size-in-gbs "$BOOT" \
+                --compartment-id "$COMPARTMENT_ID" --availability-domain "$AD" \
+                --shape "VM.Standard.A1.Flex" --shape-config "{\"ocpus\":$OCPU,\"memoryInGBs\":$MEM}" \
+                --image-id "$IMAGE_ID" --subnet-id "$SUBNET_ID" --assign-public-ip true \
+                --display-name "$NAME" --boot-volume-size-in-gbs "$BOOT" \
                 --ssh-authorized-keys-file /tmp/ssh.pub >/tmp/out 2>&1; then
               INST_ID=$(grep -oiE 'ocid1\.instance[a-z0-9._-]+' /tmp/out | head -1)
               IP=""
@@ -111,15 +98,15 @@ jobs:
                 IP=$(oci compute instance list-vnics --instance-id "$INST_ID" --query 'data[0]."public-ip"' --raw-output 2>/dev/null || true)
                 case "$IP" in [0-9]*) break ;; *) IP=""; sleep 10 ;; esac
               done
-              notify "✅ OCI 搶到一台：${NAME}（${OCPU} OCPU/${MEM} GB）｜累計 $((USED+OCPU))/${FREE_OCPU} OCPU｜Public IP: ${IP:-建立中,稍後Console查}｜SSH: ssh -i id_ed25519 ubuntu@${IP:-<IP>}"
-              sleep 45   # 等新實例登記進 OCPU 計數再續搶下一台
+              notify "✅ 搶到 OCI VM: ${NAME} (${OCPU}c/${MEM}g)" "累計 $((USED+OCPU))/${FREE_OCPU} OCPU。Public IP: ${IP:-建立中,Console查}。登入: ssh -i id_ed25519 ubuntu@${IP:-<IP>}"
+              sleep 45
               continue
             fi
             if grep -qiE "Out of (host )?capacity|OutOfHostCapacity|InternalError|500|429|TooManyRequests|LimitExceeded" /tmp/out; then
-              echo "[$i] $(date -u +%H:%M:%S) 無容量（目前 ${USED}/${FREE_OCPU}，想搶 ${OCPU} OCPU），60s 後重試"
+              echo "[$i] $(date -u +%H:%M:%S) 無容量（${USED}/${FREE_OCPU}，想搶 ${OCPU}c），60s 後重試"
             else
-              echo "❌ 非容量錯誤，停止（僅前2行）："; head -2 /tmp/out; exit 1
+              echo "❌ 非容量錯誤，停止："; head -2 /tmp/out; exit 1
             fi
             sleep 60
           done
-          echo "本輪 5h 視窗結束（目前 $(cur_ocpu)/${FREE_OCPU} OCPU），下次排程續搶。"
+          echo "本輪 5h 視窗結束（$(cur_ocpu)/${FREE_OCPU} OCPU），下次排程續搶。"
