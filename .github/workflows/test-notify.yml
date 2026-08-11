@@ -2,6 +2,8 @@ name: Test Notify (bot)
 
 on:
   workflow_dispatch:
+  push:
+    paths: ['.github/workflows/test-notify.yml']
 
 permissions:
   issues: write
