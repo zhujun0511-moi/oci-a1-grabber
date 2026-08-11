@@ -12,12 +12,8 @@ jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - name: bot 開 Issue @你（驗證 email 通知）
+      - name: bot open issue mentioning you
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue create -R "${{ github.repository }}" \
-            --title "📧 測試2 — 這次是 bot 發的，你應該收得到 email" \
-            --body "@zhujun0511-moi 這封是 github-actions[bot] 發的（不是你自己），所以 GitHub 會寄通知到你信箱。
-
-若你收到，代表『搶到 OCI VM → 自動開 Issue → email 你（含 Public IP + SSH）』這條路可行，就不用弄 Gmail 應用程式密碼了。收到請回我一聲。"
+          gh issue create -R "${{ github.repository }}" --title "測試2 — bot 發的，你應該收得到 email" --body "@zhujun0511-moi 這是 github-actions[bot] 發的(不是你自己)。收到這封 email 就代表『搶到 VM 自動開 Issue 通知你(含 Public IP+SSH)』可行，不用弄 Gmail 密碼。收到回我一聲。"
