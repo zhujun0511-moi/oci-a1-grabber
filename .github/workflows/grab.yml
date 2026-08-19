@@ -102,10 +102,11 @@ jobs:
               sleep 45
               continue
             fi
-            if grep -qiE "Out of (host )?capacity|OutOfHostCapacity|InternalError|500|429|TooManyRequests|LimitExceeded" /tmp/out; then
-              echo "[$i] $(date -u +%H:%M:%S) 無容量（${USED}/${FREE_OCPU}，想搶 ${OCPU}c），60s 後重試"
+            # 只有真正的設定/權限錯才停；容量/網路瞬斷(RequestException)/限流/暫時5xx 一律重試
+            if grep -qiE "NotAuthenticated|NotAuthorizedOrNotFound|InvalidParameter|MissingParameter|CannotParseRequest|InvalidImage|Forbidden|does not exist|can not be blank" /tmp/out; then
+              echo "❌ 設定/權限錯誤，停止："; head -3 /tmp/out; exit 1
             else
-              echo "❌ 非容量錯誤，停止："; head -2 /tmp/out; exit 1
+              echo "[$i] $(date -u +%H:%M:%S) 暫時性(容量/網路)，60s 後重試"
             fi
             sleep 60
           done
