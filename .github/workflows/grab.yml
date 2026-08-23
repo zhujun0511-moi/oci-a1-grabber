@@ -81,7 +81,7 @@ jobs:
               notify "🎉 OCI 免費額度搶滿 ${USED}/${FREE_OCPU} OCPU" "1/6+1/6+2/12 已就位，搶容器停止。"
               exit 0
             fi
-            if [ "$USED" -lt 2 ]; then OCPU=1; MEM=6; BOOT=47; else OCPU=2; MEM=12; BOOT=90; fi
+            if [ "$USED" -lt 2 ]; then OCPU=1; MEM=6; BOOT=47; else OCPU=2; MEM=12; BOOT=47; fi
             REMAIN=$(( FREE_OCPU - USED ))
             if [ "$OCPU" -gt "$REMAIN" ]; then OCPU=$REMAIN; MEM=$(( OCPU*6 )); fi
             i=$((i+1))
