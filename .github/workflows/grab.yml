@@ -44,7 +44,7 @@ jobs:
           key_file=$HOME/.oci/key.pem
           EOF
 
-      - name: Grab — 填滿 4/24（1/6+1/6+2/12），每搶到就開 Issue email 你
+      - name: Grab — 填滿 4/24（1/6+1/6+2/12）
         env:
           SUPPRESS_LABEL_WARNING: "True"
           GH_TOKEN: ${{ github.token }}
@@ -56,7 +56,7 @@ jobs:
         run: |
           set -u
           FREE_OCPU=4
-          notify() {   # $1=標題 $2=內文；bot 開 Issue @你 → GitHub email 你
+          notify() {
             echo ">> $1 | $2"
             gh issue create -R "$REPO" --title "$1" --body "@zhujun0511-moi $2" >/dev/null 2>&1 || echo "(issue 開失敗，僅 log)"
           }
@@ -78,19 +78,21 @@ jobs:
           while [ "$(date +%s)" -lt "$END" ]; do
             USED=$(cur_ocpu)
             if [ "$USED" -ge "$FREE_OCPU" ]; then
-              notify "🎉 OCI 免費額度搶滿 ${USED}/${FREE_OCPU} OCPU" "1/6+1/6+2/12 已就位，搶容器停止。"
+              notify "🎉 OCI 免費額度搶滿 ${USED}/${FREE_OCPU} OCPU" "已全部就位。"
               exit 0
             fi
-            if [ "$USED" -lt 2 ]; then OCPU=1; MEM=6; BOOT=47; else OCPU=2; MEM=12; BOOT=47; fi
+            if [ "$USED" -lt 2 ]; then OCPU=1; MEM=6; else OCPU=2; MEM=12; fi
             REMAIN=$(( FREE_OCPU - USED ))
             if [ "$OCPU" -gt "$REMAIN" ]; then OCPU=$REMAIN; MEM=$(( OCPU*6 )); fi
             i=$((i+1))
             NAME="mongodb-a1-$(date +%s)"
+            
+            # 移除 boot-volume-size 參數，改走預設 47GB
             if oci compute instance launch \
                 --compartment-id "$COMPARTMENT_ID" --availability-domain "$AD" \
                 --shape "VM.Standard.A1.Flex" --shape-config "{\"ocpus\":$OCPU,\"memoryInGBs\":$MEM}" \
                 --image-id "$IMAGE_ID" --subnet-id "$SUBNET_ID" --assign-public-ip true \
-                --display-name "$NAME" --boot-volume-size-in-gbs "$BOOT" \
+                --display-name "$NAME" \
                 --ssh-authorized-keys-file /tmp/ssh.pub >/tmp/out 2>&1; then
               INST_ID=$(grep -oiE 'ocid1\.instance[a-z0-9._-]+' /tmp/out | head -1)
               IP=""
@@ -98,15 +100,16 @@ jobs:
                 IP=$(oci compute instance list-vnics --instance-id "$INST_ID" --query 'data[0]."public-ip"' --raw-output 2>/dev/null || true)
                 case "$IP" in [0-9]*) break ;; *) IP=""; sleep 10 ;; esac
               done
-              notify "✅ 搶到 OCI VM: ${NAME} (${OCPU}c/${MEM}g)" "累計 $((USED+OCPU))/${FREE_OCPU} OCPU。Public IP: ${IP:-建立中,Console查}。登入: ssh -i id_ed25519 ubuntu@${IP:-<IP>}"
+              notify "✅ 搶到 OCI VM: ${NAME} (${OCPU}c/${MEM}g)" "累計 $((USED+OCPU))/${FREE_OCPU} OCPU。Public IP: ${IP:-建立中}。"
               sleep 45
               continue
             fi
-            # 只有真正的設定/權限錯才停；容量/網路瞬斷(RequestException)/限流/暫時5xx 一律重試
-            if grep -qiE "NotAuthenticated|NotAuthorizedOrNotFound|InvalidParameter|MissingParameter|CannotParseRequest|InvalidImage|Forbidden|does not exist|can not be blank" /tmp/out; then
-              echo "❌ 設定/權限錯誤，停止："; head -3 /tmp/out; exit 1
+            
+            # 嚴格區分：只有明確的帳號權限或金鑰錯才停止，其餘（包含容量不足、限流、5xx）繼續輪詢
+            if grep -qiE "NotAuthenticated|NotAuthorizedOrNotFound|MissingParameter|Forbidden" /tmp/out && ! grep -qiE "Out of host capacity|OutofCapacity" /tmp/out; then
+              echo "❌ 確定為不可恢復的權限/帳號錯誤，腳本停止："; cat /tmp/out; exit 1
             else
-              echo "[$i] $(date -u +%H:%M:%S) 暫時性(容量/網路)，60s 後重試"
+              echo "[$i] $(date -u +%H:%M:%S) 資源不足或暫時性網絡回應，60s 後重試..."
             fi
             sleep 60
           done
