@@ -68,7 +68,7 @@ jobs:
             v=${v%%.*}; case "$v" in ''|*[!0-9]*) v=0 ;; esac; echo "$v"
           }
           IMAGE_ID=$(oci compute image list -c "$COMPARTMENT_ID" \
-                --operating-system "Canonical Ubuntu" --operating-system-version "22.04" \
+                --operating-system "Canonical Ubuntu" --operating-system-version "24.04" \
                 --shape "VM.Standard.A1.Flex" --sort-by TIMECREATED --sort-order DESC \
                 --query 'data[0].id' --raw-output)
           case "$IMAGE_ID" in ocid1.image*) : ;; *) echo "❌ 取映像失敗"; exit 1 ;; esac
