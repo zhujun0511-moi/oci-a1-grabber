@@ -105,9 +105,11 @@ jobs:
               continue
             fi
             
-            # 嚴格區分：只有明確的帳號權限或金鑰錯才停止，其餘（包含容量不足、限流、5xx）繼續輪詢
-            if grep -qiE "NotAuthenticated|NotAuthorizedOrNotFound|MissingParameter|Forbidden" /tmp/out && ! grep -qiE "Out of host capacity|OutofCapacity" /tmp/out; then
-              echo "❌ 確定為不可恢復的權限/帳號錯誤，腳本停止："; cat /tmp/out; exit 1
+            # 嚴格區分：帳號權限/金鑰錯 或 明確設定錯（subnet/AD/映像/參數格式）才停止；
+            # 容量不足/限流/5xx/網路瞬斷 一律繼續輪詢（搶容量本就要死纏）。
+            if grep -qiE "NotAuthenticated|NotAuthorizedOrNotFound|MissingParameter|Forbidden|InvalidParameter|CannotParseRequest|InvalidImage|does not exist|can not be blank" /tmp/out && ! grep -qiE "Out of host capacity|OutofCapacity" /tmp/out; then
+              notify "❌ OCI 搶容量停止：權限/設定錯" "偵測到不可恢復錯誤（權限或設定），需人工修正。詳見 Actions run log。"
+              echo "❌ 確定為不可恢復的權限/帳號/設定錯誤，腳本停止："; cat /tmp/out; exit 1
             else
               echo "[$i] $(date -u +%H:%M:%S) 資源不足或暫時性網絡回應，60s 後重試..."
             fi
