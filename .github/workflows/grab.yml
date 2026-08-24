@@ -111,7 +111,15 @@ jobs:
               notify "❌ OCI 搶容量停止：權限/設定錯" "偵測到不可恢復錯誤（權限或設定），需人工修正。詳見 Actions run log。"
               echo "❌ 確定為不可恢復的權限/帳號/設定錯誤，腳本停止："; cat /tmp/out; exit 1
             else
-              echo "[$i] $(date -u +%H:%M:%S) 資源不足或暫時性網絡回應，60s 後重試..."
+              # 錯誤透明化（2026-08-24）：別把所有非致命都黑箱當「資源不足」。抽出實際原因印一行，
+              # 首輪 + 每 20 次 dump 完整 /tmp/out，用來區分「真沒容量」vs「被無聲重試的真錯誤」。
+              REASON=$(grep -oiE "Out of host capacity|OutOfCapacity|LimitExceeded|QuotaExceeded|ServiceLimit|TooManyRequests|429|InternalError|InternalServerError|ServiceUnavailable|50[0-9]|Timeout|timed out" /tmp/out | head -1)
+              [ -z "$REASON" ] && REASON=$(grep -iE "ServiceError|error|message|status" /tmp/out | head -1 | tr -s ' ' | cut -c1-160)
+              [ -z "$REASON" ] && REASON="(未辨識，見下方 dump)"
+              echo "[$i] $(date -u +%H:%M:%S) launch 未成功｜原因: ${REASON}｜60s 後重試..."
+              if [ "$i" -eq 1 ] || [ $(( i % 20 )) -eq 0 ]; then
+                echo "----- /tmp/out dump (i=$i) -----"; cat /tmp/out; echo "----- end dump -----"
+              fi
             fi
             sleep 60
           done
